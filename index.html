@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>My File Opener</title>
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#0f1418">
+<style>
+  :root{--bg:#0f1418;--card:#182027;--text:#e8edf0;--mut:#8a98a3;--cu:#d9854b;--teal:#3fbfb0}
+  *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--text);font-family:system-ui,sans-serif}
+  header{padding:14px 16px;display:flex;align-items:center;gap:10px;border-bottom:1px solid #243039}
+  header h1{font-size:18px;margin:0;color:var(--cu)} #name{color:var(--mut);font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  #drop{margin:16px;padding:36px 16px;border:2px dashed var(--teal);border-radius:14px;text-align:center;color:var(--mut)}
+  #drop.over{background:#12312e} button,label.btn{background:var(--cu);color:#111;border:0;border-radius:8px;padding:10px 16px;font-weight:600;cursor:pointer;display:inline-block}
+  #view{padding:0 16px 24px} #view img,#view video,#view canvas{max-width:100%;border-radius:8px;display:block;margin:8px auto}
+  #view audio{width:100%} pre{background:var(--card);padding:12px;border-radius:8px;overflow:auto;white-space:pre-wrap;word-break:break-word;font-size:13px}
+  .doc{background:#fff;color:#111;padding:16px;border-radius:8px;overflow:auto} .doc table,table{border-collapse:collapse}
+  td,th{border:1px solid #888;padding:4px 8px;font-size:13px} .scroll{overflow:auto;background:var(--card);border-radius:8px;padding:8px}
+  .zipitem{display:flex;justify-content:space-between;gap:8px;padding:10px;background:var(--card);border-radius:8px;margin:6px 0}
+  .zipitem button{padding:6px 12px} .msg{color:var(--mut);padding:12px}
+</style>
+</head>
+<body>
+<header><h1>File Opener</h1><span id="name"></span></header>
+<div id="drop">
+  <p>Drop a file here, or</p>
+  <label class="btn">Choose file<input id="pick" type="file" hidden></label>
+  <p style="font-size:12px">Tip: in WhatsApp, tap a file &rarr; Share &rarr; File Opener</p>
+</div>
+<div id="view"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script>
+const view = document.getElementById("view"), nameEl = document.getElementById("name"), drop = document.getElementById("drop");
+const esc = s => s.replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
+const TEXT = ["txt","md","json","csv","log","js","py","html","css","xml","yml","yaml","sql","java","c","cpp","ts","ini"];
+
+async function openFile(file){
+  const ext = file.name.split(".").pop().toLowerCase(), t = file.type || "";
+  nameEl.textContent = file.name; view.innerHTML = '<p class="msg">Opening…</p>'; drop.style.display = "none";
+  try {
+    if (t.startsWith("image/")) view.innerHTML = `<img src="${URL.createObjectURL(file)}">`;
+    else if (t.startsWith("video/")) view.innerHTML = `<video controls src="${URL.createObjectURL(file)}"></video>`;
+    else if (t.startsWith("audio/")) view.innerHTML = `<audio controls src="${URL.createObjectURL(file)}"></audio>`;
+    else if (ext === "pdf") await showPdf(file);
+    else if (ext === "docx") { const r = await mammoth.convertToHtml({arrayBuffer: await file.arrayBuffer()}); view.innerHTML = `<div class="doc">${r.value}</div>`; }
+    else if (["xlsx","xls"].includes(ext)) await showSheet(file);
+    else if (ext === "zip") await showZip(file);
+    else if (TEXT.includes(ext) || t.startsWith("text/")) view.innerHTML = `<pre>${esc((await file.text()).slice(0, 200000))}</pre>`;
+    else await showHex(file);
+  } catch (err) { view.innerHTML = `<p class="msg">Couldn't open this file: ${esc(String(err))}</p>`; }
+  view.insertAdjacentHTML("afterbegin", '<p><button onclick="location.href=\'./\'">Open another file</button></p>');
+}
+
+async function showPdf(file){
+  pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+  const pdf = await pdfjsLib.getDocument({data: await file.arrayBuffer()}).promise;
+  view.innerHTML = "";
+  for (let i = 1; i <= pdf.numPages; i++){
+    const page = await pdf.getPage(i), vp = page.getViewport({scale: 1.5});
+    const c = document.createElement("canvas"); c.width = vp.width; c.height = vp.height;
+    view.appendChild(c); await page.render({canvasContext: c.getContext("2d"), viewport: vp}).promise;
+  }
+}
+async function showSheet(file){
+  const wb = XLSX.read(await file.arrayBuffer()); view.innerHTML = "";
+  wb.SheetNames.forEach(n => view.insertAdjacentHTML("beforeend", `<h3>${esc(n)}</h3><div class="scroll">${XLSX.utils.sheet_to_html(wb.Sheets[n])}</div>`));
+}
+async function showZip(file){
+  const zip = await JSZip.loadAsync(file); view.innerHTML = "";
+  Object.values(zip.files).filter(f => !f.dir).forEach(f => {
+    const row = document.createElement("div"); row.className = "zipitem"; row.innerHTML = `<span>${esc(f.name)}</span>`;
+    const b = document.createElement("button"); b.textContent = "Open";
+    b.onclick = async () => openFile(new File([await f.async("blob")], f.name.split("/").pop()));
+    row.appendChild(b); view.appendChild(row);
+  });
+}
+async function showHex(file){
+  const u = new Uint8Array(await file.slice(0, 2048).arrayBuffer()); let out = "";
+  for (let i = 0; i < u.length; i += 16){
+    const r = [...u.slice(i, i+16)];
+    out += i.toString(16).padStart(6,"0") + "  " + r.map(b => b.toString(16).padStart(2,"0")).join(" ").padEnd(48) + " " + r.map(b => b>31&&b<127?String.fromCharCode(b):".").join("") + "\n";
+  }
+  view.innerHTML = `<p class="msg">Unknown type, showing the first 2 KB as hex.</p><pre>${esc(out)}</pre>`;
+}
+
+document.getElementById("pick").onchange = e => e.target.files[0] && openFile(e.target.files[0]);
+["dragover","dragenter"].forEach(ev => drop.addEventListener(ev, e => {e.preventDefault(); drop.classList.add("over");}));
+["dragleave","drop"].forEach(ev => drop.addEventListener(ev, e => {e.preventDefault(); drop.classList.remove("over");}));
+drop.addEventListener("drop", e => e.dataTransfer.files[0] && openFile(e.dataTransfer.files[0]));
+
+async function loadShared(){
+  const cache = await caches.open("shared"), res = await cache.match("shared-file");
+  if (!res) return;
+  const blob = await res.blob();
+  await openFile(new File([blob], decodeURIComponent(res.headers.get("X-Name") || "shared-file"), {type: res.headers.get("Content-Type") || ""}));
+  await cache.delete("shared-file");
+}
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").then(() => { if (location.search.includes("shared=1")) loadShared(); });
+</script>
+</body>
+</html>
